@@ -15,11 +15,8 @@ class ProfileInitiateSerializer(serializers.Serializer):
             message="Phone number must be entered in the format: '+999999999'. Up to 15 digits allowed."
         )]
     )
-    
+
     def validate_phone(self, value):
-        """Validate phone format and uniqueness"""
-        if StudentProfile.objects.filter(phone=value).exists():
-            raise serializers.ValidationError("A profile with this phone number already exists.")
         return value.strip()
     
     def validate_email(self, value):
@@ -70,12 +67,9 @@ class ProfileCreateSerializer(serializers.ModelSerializer):
     class Meta:
         model = StudentProfile
         exclude = ['id', 'is_verified', 'created_at', 'updated_at']
-    
+
     def validate_phone(self, value):
-        """Validate phone uniqueness"""
-        if StudentProfile.objects.filter(phone=value).exists():
-            raise serializers.ValidationError("A profile with this phone number already exists.")
-        return value
+        return value.strip()
 
 
 class ProfileEvaluationSerializer(serializers.Serializer):
