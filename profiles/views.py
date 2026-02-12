@@ -10,11 +10,11 @@ from .serializers import (
     ProfileInitiateSerializer, 
     ProfileVerifySerializer, 
     StudentProfileSerializer,
-    ProfileEvaluationSerializer
+    ProcessFiltersSerializer
 )
 from .services.otp_service import OTPService
 from .services.sms_service import SMSService
-from .services.ai_service import AIService
+from .services.ai_service import CourseFilterAI
 
 logger = logging.getLogger(__name__)
 
@@ -121,6 +121,7 @@ class ProfileVerifyView(APIView):
             }, status=500)
 
 
+
 class ProfileDetailView(APIView):
     """Get profile details"""
     
@@ -143,3 +144,53 @@ class ProfileDetailView(APIView):
                 'success': False,
                 'message': 'Internal server error'
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class ProcessFiltersView(APIView):
+    """
+    Process student profile using AI to generate intelligent course filters
+    """
+
+    def post(self, request):
+        try:
+            serializer = ProcessFiltersSerializer(data=request.data)
+
+            if not serializer.is_valid():
+                return Response(
+                    {
+                        'success': False,
+                        'error': 'Invalid input data',
+                        'details': serializer.errors
+                    },
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            # Get validated data
+            profile_data = serializer.validated_data
+            course_sample = profile_data.pop('courseSample')
+
+            # Process with AI
+            ai_service = CourseFilterAI()
+            result = ai_service.process_student_profile(profile_data, course_sample)
+
+            if not result['success']:
+                logger.error(f"AI processing failed: {result.get('error')}")
+                return Response(
+                    {
+                        'success': False,
+                        'error': result.get('error', 'AI processing failed')
+                    },
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+
+            return Response(result, status=status.HTTP_200_OK)
+
+        except Exception as e:
+            logger.error(f"Unexpected error in ProcessFiltersView: {str(e)}")
+            return Response(
+                {
+                    'success': False,
+                    'error': 'Server error occurred'
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )

@@ -79,3 +79,26 @@ class ProfileEvaluationSerializer(serializers.Serializer):
     recommended_programs = serializers.ListField(child=serializers.CharField())
     improvement_tips = serializers.ListField(child=serializers.CharField())
     assessment_summary = serializers.CharField(allow_blank=True)
+
+
+class ProcessFiltersSerializer(serializers.Serializer):
+    countries = serializers.ListField(
+        child=serializers.CharField(),
+        required=True
+    )
+    degree = serializers.CharField(required=True)
+    fields = serializers.ListField(
+        child=serializers.CharField(),
+        required=True
+    )
+    completedDegree = serializers.CharField(required=True)
+    cgpa = serializers.FloatField(required=True)
+    gradYear = serializers.CharField(required=True)
+    budget = serializers.ListField(
+        child=serializers.IntegerField(),
+        required=True
+    )
+    courseSample = serializers.ListField(
+        child=serializers.DictField(),
+        required=True
+    )
