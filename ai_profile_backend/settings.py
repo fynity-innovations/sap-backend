@@ -20,6 +20,8 @@ SECRET_KEY = os.getenv('SECRET_KEY', 'django-insecure-development-key-change-in-
 # Add Gemini API Key
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', 'your-gemini-api-key-here')
 
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = False
 

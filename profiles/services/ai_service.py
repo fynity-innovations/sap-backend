@@ -1,26 +1,29 @@
-# profiles/ai_service.py
+# profiles/services/ai_service.py
 
-import google.generativeai as genai
 import json
-from django.conf import settings
 import logging
+from django.conf import settings
+from openai import OpenAI
 
 logger = logging.getLogger(__name__)
 
-# Configure Gemini
-genai.configure(api_key=settings.GEMINI_API_KEY)
+client = OpenAI(api_key=settings.OPENAI_API_KEY)
 
 
 class CourseFilterAI:
     def __init__(self):
-        # FIXED: Use correct model name - remove version number
-        self.model = genai.GenerativeModel('gemini-pro')
+        # Using fast + cheap model (best for this use case)
+        self.model = "gpt-4o-mini"
 
     def process_student_profile(self, profile_data, course_sample):
         """
         Process student profile and generate intelligent course filters
         """
-        prompt = f"""You are a course filter expert. Analyze the student profile and generate appropriate course filters.
+
+        prompt = f"""
+You are a course filtering AI.
+
+Analyze the student profile and return ONLY a valid JSON object.
 
 Student Profile:
 - Preferred Countries: {', '.join(profile_data.get('countries', []))}
@@ -29,103 +32,56 @@ Student Profile:
 - Completed Degree: {profile_data.get('completedDegree', '')}
 - CGPA: {profile_data.get('cgpa', 0)}/10
 - Graduation Year: {profile_data.get('gradYear', '')}
-- Budget: ₹{profile_data.get('budget', [0])[0]} Lakhs per year (Indian Rupees)
+- Budget: ₹{profile_data.get('budget', [0])[0]} Lakhs per year
 
-Course Data Sample (to understand available options):
-{json.dumps(course_sample[:20], indent=2)}
-
-Task: Generate URL query parameters for filtering courses. Consider:
-
-1. **Country Mapping**: Use exact country names from the course data
-   - Match student's preferred countries to available countries
-
-2. **Level Mapping**: Map target degree to course levels:
-   - "Undergraduate" → "Bachelor" or "Undergraduate"
-   - "Postgraduate" → "Master" or "Postgraduate" or "MSc" or "MA"
-   - "Doctorate" → "PhD" or "Doctorate" or "Doctoral"
-   - "Diploma" → "Diploma" or "Certificate"
-
-3. **Field/Course Mapping**: Match interest fields to actual course titles intelligently:
-   - "IT & Computer Science" → search for courses containing: "Computer", "IT", "Software", "Data", "AI", "Machine Learning", "Cyber", "Information Technology", "Computing"
-   - "Business & Management" → "Business", "Management", "MBA", "Finance", "Economics", "Marketing", "Accounting"
-   - "Healthcare & Medicine" → "Medicine", "Health", "Nursing", "Medical", "Clinical", "Pharmacy", "Biomedical"
-   - "Psychology & Social" → "Psychology", "Social", "Sociology", "Counseling", "Behavior"
-
-4. **Duration Mapping**: Based on completed degree and target degree:
-   - High School → Undergraduate = "3 Years" or "4 Years"
-   - Undergraduate → Postgraduate = "1 Year", "1.5 Years", or "2 Years"
-   - Postgraduate → Doctorate = "3 Years" or "4 Years"
-
-5. **Budget Conversion**: Convert ₹{profile_data.get('budget', [0])[0]} Lakhs to USD/Euros:
-   - Conversion rates: ₹1 Lakh ≈ $1,200 USD ≈ €1,100 EUR
-   - Calculate max tuition_fees threshold in USD
-   - Example: ₹20L = ~$24,000 or ~€22,000
-
-6. **Search Query**: Generate a general search term based on fields of interest that will match course titles
-
-CRITICAL: Return ONLY a valid JSON object with NO markdown formatting, NO code blocks, NO explanation.
-Just the raw JSON object with this exact structure:
+Return ONLY this JSON structure:
 
 {{
-  "country": "exact country name from course data or empty string",
-  "level": "exact level name that matches course data or empty string",
-  "course": "specific search term for course title based on field of interest",
-  "duration": "duration string like '2 Years' or '1 Year' or empty string",
-  "maxBudgetUSD": numeric value or null,
-  "searchQuery": "general search term combining field keywords"
+  "country": "",
+  "level": "",
+  "course": "",
+  "duration": "",
+  "maxBudgetUSD": null,
+  "searchQuery": ""
 }}
 
-Example response format:
-{{
-  "country": "Denmark",
-  "level": "Master",
-  "course": "Computer Science Engineering",
-  "duration": "2 Years",
-  "maxBudgetUSD": 24000,
-  "searchQuery": "Computer Science Software Engineering Technology"
-}}
-
-Remember: Return ONLY the JSON object, nothing else."""
+No explanation.
+No markdown.
+Only raw JSON.
+"""
 
         try:
-            logger.info("Sending request to Gemini API...")
-            response = self.model.generate_content(
-                prompt,
-                generation_config={"temperature": 0.4,"max_output_tokens": 1000,}
+            response = client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": "You return only valid JSON."},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.3,
             )
 
-            response_text = response.text.strip()
+            response_text = response.choices[0].message.content.strip()
 
-            logger.info(f"Gemini response: {response_text[:200]}...")
+            logger.info(f"OpenAI response: {response_text}")
 
-            # Remove markdown code blocks if present
-            if response_text.startswith('```'):
-                response_text = response_text.split('```')[1]
-                if response_text.startswith('json'):
-                    response_text = response_text[4:]
-                response_text = response_text.strip()
-
-            # Parse JSON
             filters = json.loads(response_text)
 
-            logger.info(f"Successfully parsed filters: {filters}")
-
             return {
-                'success': True,
-                'filters': filters
+                "success": True,
+                "filters": filters
             }
 
         except json.JSONDecodeError as e:
             logger.error(f"JSON parsing error: {str(e)}")
-            logger.error(f"Raw response: {response_text}")
             return {
-                'success': False,
-                'error': f'Failed to parse AI response: {str(e)}',
-                'raw_response': response_text
+                "success": False,
+                "error": f"Failed to parse AI response: {str(e)}",
+                "raw_response": response_text
             }
+
         except Exception as e:
-            logger.error(f"AI processing error: {str(e)}")
+            logger.error(f"OpenAI error: {str(e)}")
             return {
-                'success': False,
-                'error': f'AI processing failed: {str(e)}'
+                "success": False,
+                "error": f"AI processing failed: {str(e)}"
             }
