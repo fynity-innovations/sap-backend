@@ -3,6 +3,9 @@
 import google.generativeai as genai
 import json
 from django.conf import settings
+import logging
+
+logger = logging.getLogger(__name__)
 
 # Configure Gemini
 genai.configure(api_key=settings.GEMINI_API_KEY)
@@ -10,7 +13,8 @@ genai.configure(api_key=settings.GEMINI_API_KEY)
 
 class CourseFilterAI:
     def __init__(self):
-        self.model = genai.GenerativeModel('gemini-1.5-flash')
+        # FIXED: Use correct model name - remove version number
+        self.model = genai.GenerativeModel('gemini-pro')
 
     def process_student_profile(self, profile_data, course_sample):
         """
@@ -84,8 +88,15 @@ Example response format:
 Remember: Return ONLY the JSON object, nothing else."""
 
         try:
-            response = self.model.generate_content(prompt)
+            logger.info("Sending request to Gemini API...")
+            response = self.model.generate_content(
+                prompt,
+                generation_config={"temperature": 0.4,"max_output_tokens": 1000,}
+            )
+
             response_text = response.text.strip()
+
+            logger.info(f"Gemini response: {response_text[:200]}...")
 
             # Remove markdown code blocks if present
             if response_text.startswith('```'):
@@ -97,18 +108,23 @@ Remember: Return ONLY the JSON object, nothing else."""
             # Parse JSON
             filters = json.loads(response_text)
 
+            logger.info(f"Successfully parsed filters: {filters}")
+
             return {
                 'success': True,
                 'filters': filters
             }
 
         except json.JSONDecodeError as e:
+            logger.error(f"JSON parsing error: {str(e)}")
+            logger.error(f"Raw response: {response_text}")
             return {
                 'success': False,
                 'error': f'Failed to parse AI response: {str(e)}',
                 'raw_response': response_text
             }
         except Exception as e:
+            logger.error(f"AI processing error: {str(e)}")
             return {
                 'success': False,
                 'error': f'AI processing failed: {str(e)}'
