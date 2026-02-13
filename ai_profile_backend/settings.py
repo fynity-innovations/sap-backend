@@ -17,9 +17,6 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = os.getenv('SECRET_KEY', 'django-insecure-development-key-change-in-production')
 
-# Add Gemini API Key
-GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', 'your-gemini-api-key-here')
-
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 # SECURITY WARNING: don't run with debug turned on in production!
@@ -118,6 +115,7 @@ AUTH_PASSWORD_VALIDATORS = [
 ]
 
 CSRF_TRUSTED_ORIGINS = [
+    "https://www.edmaster.ai",
     "https://*.railway.app",
     "https://sap-black.vercel.app",
 ]
@@ -159,6 +157,7 @@ REST_FRAMEWORK = {
 
 # CORS Configuration
 CORS_ALLOWED_ORIGINS = [
+    'https://www.edmaster.ai',
     'https://sap-black.vercel.app',
     'http://localhost:3000',
     'http://127.0.0.1:3000'

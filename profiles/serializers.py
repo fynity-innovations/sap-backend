@@ -81,24 +81,15 @@ class ProfileEvaluationSerializer(serializers.Serializer):
     assessment_summary = serializers.CharField(allow_blank=True)
 
 
+
+# profiles/serializers.py
 class ProcessFiltersSerializer(serializers.Serializer):
-    countries = serializers.ListField(
-        child=serializers.CharField(),
-        required=True
-    )
+    countries = serializers.ListField(child=serializers.CharField(), required=True)
     degree = serializers.CharField(required=True)
-    fields = serializers.ListField(
-        child=serializers.CharField(),
-        required=True
-    )
+    fields = serializers.ListField(child=serializers.CharField(), required=True)
+    intakes = serializers.ListField(child=serializers.CharField(), required=True)  # NEW
     completedDegree = serializers.CharField(required=True)
     cgpa = serializers.FloatField(required=True)
     gradYear = serializers.CharField(required=True)
-    budget = serializers.ListField(
-        child=serializers.IntegerField(),
-        required=True
-    )
-    courseSample = serializers.ListField(
-        child=serializers.DictField(),
-        required=True
-    )
+    budget = serializers.ListField(child=serializers.IntegerField(), required=True)
+    courseSample = serializers.ListField(child=serializers.DictField(), required=True)
