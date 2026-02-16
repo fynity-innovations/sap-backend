@@ -8,4 +8,5 @@ urlpatterns = [
     path('verify/', views.ProfileVerifyView.as_view(), name='profile_verify'),
     path('process-filters/', views.ProcessFiltersView.as_view(), name='process-filters'),
     path('detail/<str:phone>/', views.ProfileDetailView.as_view(), name='profile_detail'),
+    path('chatbot/query/', views.ChatbotQueryView.as_view(), name='chatbot-query'),
 ]

@@ -4,27 +4,34 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from django.db import transaction
 from django.core.cache import cache
+from django.conf import settings
 
 from .models import StudentProfile
 from .serializers import (
-    ProfileInitiateSerializer, 
-    ProfileVerifySerializer, 
+    ProfileInitiateSerializer,
+    ProfileVerifySerializer,
     StudentProfileSerializer,
     ProcessFiltersSerializer
 )
 from .services.otp_service import OTPService
 from .services.sms_service import SMSService
 from .services.ai_service import CourseFilterAI
+from .services.whatsapp_service import WhatsAppService
+
 
 logger = logging.getLogger(__name__)
 
 
 class ProfileInitiateView(APIView):
+    """
+    Initiate profile creation and send OTP
+    """
 
     def post(self, request):
         serializer = ProfileInitiateSerializer(data=request.data)
 
         if not serializer.is_valid():
+            logger.error(f"Validation errors: {serializer.errors}")
             return Response({
                 "success": False,
                 "errors": serializer.errors
@@ -33,21 +40,34 @@ class ProfileInitiateView(APIView):
         data = serializer.validated_data
         phone = data["phone"]
 
+        logger.info(f"Initiating profile for phone: {phone}")
+
         otp_service = OTPService()
-        sms_service = SMSService()
-
         otp_code = otp_service.generate_otp(phone)
-        sms_result = sms_service.send_otp(phone, otp_code)
 
-        if not sms_result["success"]:
-            return Response({
-                "success": False,
-                "message": "Failed to send OTP"
-            }, status=500)
+        # Try WhatsApp first
+        whatsapp_service = WhatsAppService()
+        whatsapp_result = whatsapp_service.send_otp(phone, otp_code)
+        logger.info(f"WhatsApp result: {whatsapp_result}")
 
-        # Store full academic payload in cache (not DB)
+        if whatsapp_result["success"]:
+            logger.info("OTP sent via WhatsApp")
+        else:
+            logger.warning("WhatsApp failed. Falling back to SMS")
+            sms_service = SMSService()
+            sms_result = sms_service.send_otp(phone, otp_code)
+
+            if not sms_result["success"]:
+                logger.error("Both WhatsApp and SMS failed")
+                return Response({
+                    "success": False,
+                    "message": "Failed to send OTP"
+                }, status=500)
+
+        # Store full data in cache
         cache_key = f"profile_data_{phone}"
-        cache.set(cache_key, data, timeout=300)
+        cache.set(cache_key, data, timeout=600)  # 10 minutes
+        logger.info(f"Stored profile data in cache: {cache_key}")
 
         return Response({
             "success": True,
@@ -55,13 +75,16 @@ class ProfileInitiateView(APIView):
         }, status=200)
 
 
-
 class ProfileVerifyView(APIView):
+    """
+    Verify OTP and create/update profile
+    """
 
     def post(self, request):
         serializer = ProfileVerifySerializer(data=request.data)
 
         if not serializer.is_valid():
+            logger.error(f"Validation errors: {serializer.errors}")
             return Response({
                 "success": False,
                 "errors": serializer.errors
@@ -70,20 +93,23 @@ class ProfileVerifyView(APIView):
         phone = serializer.validated_data["phone"]
         otp = serializer.validated_data["otp"]
 
+        logger.info(f"Verifying OTP for phone: {phone}")
+
         # Verify OTP
         otp_service = OTPService()
         if not otp_service.verify_otp(phone, otp):
+            logger.warning(f"Invalid OTP for {phone}")
             return Response({
                 "success": False,
                 "message": "Invalid or expired OTP"
             }, status=400)
 
-        # Get academic data from cache
-        from django.core.cache import cache
+        # Get data from cache
         cache_key = f"profile_data_{phone}"
         profile_data = cache.get(cache_key)
 
         if not profile_data:
+            logger.error(f"No profile data found in cache for {phone}")
             return Response({
                 "success": False,
                 "message": "Session expired. Please try again."
@@ -91,7 +117,6 @@ class ProfileVerifyView(APIView):
 
         try:
             with transaction.atomic():
-
                 # Save ONLY CONTACT INFO
                 student_profile, created = StudentProfile.objects.update_or_create(
                     phone=phone,
@@ -101,8 +126,12 @@ class ProfileVerifyView(APIView):
                         "is_verified": True
                     }
                 )
+
+                logger.info(f"Profile {'created' if created else 'updated'} for {phone}")
+
                 # Clear cache
                 cache.delete(cache_key)
+                logger.info(f"Cleared cache: {cache_key}")
 
                 return Response({
                     "success": True,
@@ -114,17 +143,18 @@ class ProfileVerifyView(APIView):
                 }, status=201)
 
         except Exception as e:
-            logger.error(str(e))
+            logger.error(f"Error creating profile: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
             return Response({
                 "success": False,
                 "message": "Internal server error"
             }, status=500)
 
 
-
 class ProfileDetailView(APIView):
     """Get profile details"""
-    
+
     def get(self, request, phone):
         try:
             profile = StudentProfile.objects.get(phone=phone, is_verified=True)
@@ -156,6 +186,7 @@ class ProcessFiltersView(APIView):
             serializer = ProcessFiltersSerializer(data=request.data)
 
             if not serializer.is_valid():
+                logger.error(f"Filter validation errors: {serializer.errors}")
                 return Response(
                     {
                         'success': False,
@@ -168,6 +199,8 @@ class ProcessFiltersView(APIView):
             # Get validated data
             profile_data = serializer.validated_data
             course_sample = profile_data.pop('courseSample')
+
+            logger.info(f"Processing filters for profile: {profile_data}")
 
             # Process with AI
             ai_service = CourseFilterAI()
@@ -183,10 +216,13 @@ class ProcessFiltersView(APIView):
                     status=status.HTTP_500_INTERNAL_SERVER_ERROR
                 )
 
+            logger.info(f"Successfully generated filters: {result['filters']}")
             return Response(result, status=status.HTTP_200_OK)
 
         except Exception as e:
             logger.error(f"Unexpected error in ProcessFiltersView: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
             return Response(
                 {
                     'success': False,
@@ -194,3 +230,119 @@ class ProcessFiltersView(APIView):
                 },
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
+
+
+class ChatbotQueryView(APIView):
+    """
+    Handle chatbot queries with AI
+    """
+
+    def post(self, request):
+        try:
+            message = request.data.get('message', '')
+            context = request.data.get('context', {})
+            history = request.data.get('conversationHistory', [])
+
+            if not message:
+                return Response({
+                    'success': False,
+                    'error': 'Message is required'
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+            logger.info(f"Chatbot query: {message[:50]}...")
+
+            # Use OpenAI to generate response
+            from openai import OpenAI
+            client = OpenAI(api_key=settings.OPENAI_API_KEY)
+
+            # Build context string
+            countries = context.get('countries', [])
+            universities = context.get('universities', [])
+            courses = context.get('courses', [])
+            user_name = context.get('userName', 'there')
+
+            # Extract sample data
+            country_names = [c.get('country_name', '') for c in countries[:10] if c.get('country_name')]
+            course_titles = [c.get('course_title', '')[:60] for c in courses[:5] if c.get('course_title')]
+            uni_names = [u.get('university_name', '') for u in universities[:5] if u.get('university_name')]
+
+            system_prompt = f"""You are a helpful study abroad assistant chatbot. You help students find courses, universities, and countries to study in.
+
+Available Data Context:
+- {len(countries)} countries available: {', '.join(country_names)}
+- {len(universities)} universities available including: {', '.join(uni_names)}
+- {len(courses)} courses available
+
+Sample Courses:
+{chr(10).join([f"- {title}" for title in course_titles])}
+
+User's name: {user_name}
+
+Your Role:
+1. Be friendly, warm, and conversational
+2. Give specific recommendations from the data
+3. Keep responses concise (under 150 words)
+4. Use emojis sparingly 
+5. If asked about finding courses, suggest the AI Profile Evaluator
+6. Answer general questions about studying abroad (applications, visas, costs, scholarships)
+7. Be encouraging and supportive
+
+Important: Base your answers on the data context provided above."""
+
+            # Build conversation messages
+            messages = [
+                {"role": "system", "content": system_prompt}
+            ]
+
+            # Add conversation history (last 4 messages)
+            for msg in history[-4:]:
+                role = msg.get('role', 'user')
+                if role == 'system':
+                    role = 'assistant'
+                messages.append({
+                    "role": role,
+                    "content": msg.get('content', '')
+                })
+
+            # Add current message
+            messages.append({
+                "role": "user",
+                "content": message
+            })
+
+            logger.info(f"Sending {len(messages)} messages to OpenAI")
+
+            # Get AI response
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=messages,
+                temperature=0.7,
+                max_tokens=300
+            )
+
+            ai_response = response.choices[0].message.content.strip()
+            logger.info(f"AI response: {ai_response[:100]}...")
+
+            # Check if we should suggest filters
+            suggest_keywords = [
+                'find course', 'recommend course', 'which course', 'suggest course',
+                'want to study', 'looking for', 'search for', 'help me find',
+                'show me course', 'best course'
+            ]
+
+            suggest_filters = any(keyword in message.lower() for keyword in suggest_keywords)
+
+            return Response({
+                'success': True,
+                'response': ai_response,
+                'suggestFilters': suggest_filters
+            }, status=status.HTTP_200_OK)
+
+        except Exception as e:
+            logger.error(f"Chatbot error: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return Response({
+                'success': False,
+                'error': 'Failed to process message'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

@@ -1,5 +1,3 @@
-# profiles/services/ai_service.py
-
 import json
 import logging
 from django.conf import settings
@@ -40,21 +38,22 @@ STUDENT PROFILE:
 - Budget: ₹{profile_data.get('budget', [0])[0]} Lakhs/year (Indian Rupees)
 
 ACTUAL COURSE DATA:
-Available Countries: {', '.join(countries_in_data)}
+Available Countries: {', '.join(countries_in_data[:20])}
 Available Levels: {', '.join(levels_in_data)}
-Available Durations: {', '.join(durations_in_data)}
-Available Intakes: {', '.join(intakes_in_data)}
+Available Durations: {', '.join(durations_in_data[:10])}
+Available Intakes: {', '.join(intakes_in_data[:10])}
 Sample Course Titles: {', '.join(course_titles_sample)}
 
 INSTRUCTIONS:
 
 1. **countries**: Return array of ALL countries from student preferences that match Available Countries
-   - Student wants ["Denmark", "USA"] → return ["Denmark", "USA"] if both are in data
    - MUST be array, not string
+   - Match exactly from Available Countries
 
 2. **level**: Map to exact level from Available Levels:
    - "Postgraduate" → "Master"
    - "Undergraduate" → "Bachelor"
+   - "Doctorate" → "PhD"
 
 3. **course**: Simple keyword from field interest:
    - "IT & Computer Science" → "Computer"
@@ -66,17 +65,18 @@ INSTRUCTIONS:
 
 5. **intakes**: Return array of student's preferred intakes that match Available Intakes
    - MUST be array
-   - Match exactly or find closest (e.g., "Fall 2026" → "Fall 2026")
+   - Match exactly from Available Intakes
 
 6. **maxBudgetUSD**: Convert ₹ Lakhs to USD
    - Formula: (budget_lakhs * 100000) / 83
    - ₹20L = 24096 USD
    - Round to nearest 1000
+   - ADD 20% buffer for accuracy
 
 7. **searchQuery**: Combine field keywords
    - "IT & Computer Science" → "Computer Science"
 
-RETURN ONLY THIS JSON (no markdown):
+RETURN ONLY THIS JSON (no markdown, no explanation):
 {{
   "countries": ["array of country names"],
   "level": "exact level",
@@ -89,8 +89,8 @@ RETURN ONLY THIS JSON (no markdown):
 
         try:
             logger.info("Calling OpenAI API...")
-            logger.info(f"Student wants countries: {profile_data.get('countries')}")
-            logger.info(f"Student wants intakes: {profile_data.get('intakes')}")
+            logger.info(f"Student countries: {profile_data.get('countries')}")
+            logger.info(f"Student intakes: {profile_data.get('intakes')}")
             logger.info(f"Budget: ₹{profile_data.get('budget', [0])[0]}L")
 
             response = client.chat.completions.create(
@@ -115,7 +115,7 @@ RETURN ONLY THIS JSON (no markdown):
             filters = json.loads(response_text)
             logger.info(f"Parsed filters: {filters}")
 
-            # Validation
+            # Validation and cleanup
             if isinstance(filters.get('countries'), str):
                 filters['countries'] = [filters['countries']] if filters['countries'] else []
 
@@ -125,14 +125,20 @@ RETURN ONLY THIS JSON (no markdown):
             # Validate countries
             if filters.get('countries'):
                 valid_countries = [c for c in filters['countries'] if c in countries_in_data]
-                filters['countries'] = valid_countries or profile_data.get('countries', [])
+                if not valid_countries:
+                    valid_countries = profile_data.get('countries', [])
+                filters['countries'] = valid_countries
 
             # Validate intakes
             if filters.get('intakes'):
                 valid_intakes = [i for i in filters['intakes'] if i in intakes_in_data]
                 filters['intakes'] = valid_intakes
 
-            logger.info(f"Final filters: {filters}")
+            # Add 20% buffer to budget
+            if filters.get('maxBudgetUSD'):
+                filters['maxBudgetUSD'] = int(filters['maxBudgetUSD'] * 1.2)
+
+            logger.info(f"Final validated filters: {filters}")
 
             return {
                 'success': True,
