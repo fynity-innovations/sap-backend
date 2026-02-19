@@ -1,4 +1,5 @@
 import logging
+from datetime import timezone
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -11,7 +12,8 @@ from .serializers import (
     ProfileInitiateSerializer,
     ProfileVerifySerializer,
     StudentProfileSerializer,
-    ProcessFiltersSerializer
+    ProcessFiltersSerializer,
+    CourseSuggestionSerializer
 )
 from .services.otp_service import OTPService
 from .services.sms_service import SMSService
@@ -45,24 +47,27 @@ class ProfileInitiateView(APIView):
         otp_service = OTPService()
         otp_code = otp_service.generate_otp(phone)
 
+        sms_service = SMSService()
+        sms_result = sms_service.send_otp(phone, otp_code)
+
         # Try WhatsApp first
-        whatsapp_service = WhatsAppService()
-        whatsapp_result = whatsapp_service.send_otp(phone, otp_code)
-        logger.info(f"WhatsApp result: {whatsapp_result}")
+        # whatsapp_service = WhatsAppService()
+        # whatsapp_result = whatsapp_service.send_otp(phone, otp_code)
+        # logger.info(f"WhatsApp result: {whatsapp_result}")
 
-        if whatsapp_result["success"]:
-            logger.info("OTP sent via WhatsApp")
-        else:
-            logger.warning("WhatsApp failed. Falling back to SMS")
-            sms_service = SMSService()
-            sms_result = sms_service.send_otp(phone, otp_code)
-
-            if not sms_result["success"]:
-                logger.error("Both WhatsApp and SMS failed")
-                return Response({
-                    "success": False,
-                    "message": "Failed to send OTP"
-                }, status=500)
+        # if whatsapp_result["success"]:
+        #     logger.info("OTP sent via WhatsApp")
+        # else:
+        #     logger.warning("WhatsApp failed. Falling back to SMS")
+        #     sms_service = SMSService()
+        #     sms_result = sms_service.send_otp(phone, otp_code)
+        #
+        #     if not sms_result["success"]:
+        #         logger.error("Both WhatsApp and SMS failed")
+        #         return Response({
+        #             "success": False,
+        #             "message": "Failed to send OTP"
+        #         }, status=500)
 
         # Store full data in cache
         cache_key = f"profile_data_{phone}"
@@ -231,6 +236,284 @@ class ProcessFiltersView(APIView):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
+
+class CourseSuggestionView(APIView):
+    """
+    Get AI-powered course suggestions based on search query
+    """
+
+    def post(self, request):
+        try:
+            serializer = CourseSuggestionSerializer(data=request.data)
+
+            if not serializer.is_valid():
+                return Response(
+                    {
+                        'success': False,
+                        'error': 'Invalid input data',
+                        'details': serializer.errors
+                    },
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            query = serializer.validated_data.get('query', '').strip()
+            limit = serializer.validated_data.get('limit', 10)
+            phone = serializer.validated_data.get('phone')
+
+            if not query:
+                return Response(
+                    {
+                        'success': False,
+                        'error': 'Query is required',
+                        'suggestions': []
+                    },
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            # Get course sample
+            from .models import Course
+            course_sample = list(
+                Course.objects.all().values(
+                    'course_id',
+                    'course_title',
+                    'university_name',
+                    'country_name',
+                    'level',
+                    'duration',
+                    'tuition_fees',
+                    'currency',
+                    'intake'
+                )
+            )[:100]
+
+            # Get user profile (optional)
+            user_profile_data = None
+            if phone:
+                try:
+                    user_profile = StudentProfile.objects.get(
+                        phone=phone,
+                        is_verified=True
+                    )
+                    user_profile_data = {
+                        'countries': user_profile.countries or [],
+                        'degree': user_profile.degree or '',
+                        'fields': user_profile.fields or [],
+                        'budget': user_profile.budget or [0],
+                    }
+                except StudentProfile.DoesNotExist:
+                    logger.warning(f"User profile not found for {phone}")
+                    user_profile_data = None
+
+            # Get AI suggestions
+            ai_service = CourseFilterAI()
+            result = ai_service.get_course_suggestions(
+                query=query,
+                course_sample=course_sample,
+                limit=limit,
+                user_profile=user_profile_data
+            )
+
+            if not result.get('success'):
+                logger.error(f"AI suggestions failed for query '{query}': {result.get('error')}")
+                return Response(
+                    {
+                        'success': False,
+                        'error': result.get('error', 'AI suggestions failed'),
+                        'suggestions': []
+                    },
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+
+            logger.info(
+                f"AI suggestions successful for query '{query}': {len(result.get('suggestions', []))} suggestions")
+            return Response(result, status=status.HTTP_200_OK)
+
+        except Exception as e:
+            logger.error(f"Unexpected error in CourseSuggestionView: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return Response(
+                {
+                    'success': False,
+                    'error': 'Server error occurred',
+                    'suggestions': []
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class CourseSelectionView(APIView):
+    """
+    Handle course selection from AI suggestions
+    """
+
+    def post(self, request):
+        try:
+            serializer = CourseSuggestionSerializer(data=request.data)
+
+            if not serializer.is_valid():
+                return Response(
+                    {
+                        'success': False,
+                        'error': 'Invalid input data',
+                        'details': serializer.errors
+                    },
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            course_id = serializer.validated_data.get('course_id')
+            phone = serializer.validated_data.get('phone')
+
+            if not course_id:
+                return Response(
+                    {
+                        'success': False,
+                        'error': 'Course ID is required',
+                        'selected_course': None
+                    },
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            # Get user profile
+            try:
+                user_profile = StudentProfile.objects.get(phone=phone, is_verified=True)
+            except StudentProfile.DoesNotExist:
+                logger.warning(f"User profile not found for {phone}")
+                return Response(
+                    {
+                        'success': False,
+                        'error': 'User profile not found',
+                        'selected_course': None
+                    },
+                    status=status.HTTP_404_NOT_FOUND
+                )
+
+            # Get course details
+            try:
+                from .models import Course
+                selected_course = Course.objects.get(course_id=course_id)
+
+                # Prepare selected course data
+                selected_course_data = {
+                    'course_id': selected_course.course_id,
+                    'course_title': selected_course.course_title,
+                    'university_name': selected_course.university_name,
+                    'country_name': selected_course.country_name,
+                    'level': selected_course.level,
+                    'duration': selected_course.duration,
+                    'tuition_fees': selected_course.tuition_fees,
+                    'currency': selected_course.currency,
+                    'intake': selected_course.intake,
+                    'selected_at': timezone.now().isoformat(),
+                    'user_phone': phone
+                }
+
+                logger.info(f"User {phone} selected course: {selected_course.course_title}")
+
+                return Response({
+                    'success': True,
+                    'message': 'Course selected successfully',
+                    'selected_course': selected_course_data
+                }, status=status.HTTP_200_OK)
+
+            except Course.DoesNotExist:
+                logger.error(f"Course not found with ID: {course_id}")
+                return Response(
+                    {
+                        'success': False,
+                        'error': 'Course not found',
+                        'selected_course': None
+                    },
+                    status=status.HTTP_404_NOT_FOUND)
+
+        except Exception as e:
+            logger.error(f"Error in CourseSelectionView: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return Response(
+                {
+                    'success': False,
+                    'error': 'Server error occurred',
+                    'selected_course': None
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class AICourseRecommendationView(APIView):
+    """
+    Get AI-powered course recommendations based on user profile
+    """
+
+    def post(self, request):
+        try:
+            phone = request.data.get('phone')
+
+            if not phone:
+                return Response(
+                    {
+                        'success': False,
+                        'error': 'Phone number is required',
+                        'recommendations': []
+                    },
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            # Get user profile
+            try:
+                user_profile = StudentProfile.objects.get(phone=phone, is_verified=True)
+            except StudentProfile.DoesNotExist:
+                logger.warning(f"User profile not found for {phone}")
+                return Response(
+                    {
+                        'success': False,
+                        'error': 'User profile not found',
+                        'recommendations': []
+                    },
+                    status=status.HTTP_404_NOT_FOUND
+                )
+
+            # Get course sample
+            from .models import Course
+            course_sample = list(Course.objects.all().values(
+                'course_id', 'course_title', 'university_name', 'country_name',
+                'level', 'duration', 'tuition_fees', 'currency', 'intake'
+            ))[:100]
+
+            # Get AI recommendations
+            ai_service = CourseFilterAI()
+            result = ai_service.get_ai_course_recommendations(
+                user_profile.__dict__,
+                course_sample
+            )
+
+            if not result['success']:
+                logger.error(f"AI recommendations failed for {phone}: {result.get('error')}")
+                return Response(
+                    {
+                        'success': False,
+                        'error': result.get('error', 'AI recommendations failed'),
+                        'recommendations': []
+                    },
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+
+            logger.info(
+                f"AI recommendations successful for {phone}: {len(result.get('recommendations', []))} recommendations")
+            return Response(result, status=status.HTTP_200_OK)
+
+        except Exception as e:
+            logger.error(f"Error in AICourseRecommendationView: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return Response(
+                {
+                    'success': False,
+                    'error': 'Server error occurred',
+                    'recommendations': []
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
 class ChatbotQueryView(APIView):
     """
