@@ -534,71 +534,112 @@ class ChatbotQueryView(APIView):
 
             logger.info(f"Chatbot query: {message[:50]}...")
 
-            # Use OpenAI to generate response
             from openai import OpenAI
             client = OpenAI(api_key=settings.OPENAI_API_KEY)
 
-            # Build context string
-            countries = context.get('countries', [])
+            countries    = context.get('countries', [])
             universities = context.get('universities', [])
-            courses = context.get('courses', [])
-            user_name = context.get('userName', 'there')
+            courses      = context.get('courses', [])
+            user_name    = context.get('userName', 'there')
 
-            # Extract sample data
-            country_names = [c.get('country_name', '') for c in countries[:10] if c.get('country_name')]
-            course_titles = [c.get('course_title', '')[:60] for c in courses[:5] if c.get('course_title')]
-            uni_names = [u.get('university_name', '') for u in universities[:5] if u.get('university_name')]
+            # ── Build rich data summaries for the prompt ───────────────────
 
-            system_prompt = f"""You are a helpful study abroad assistant chatbot. You help students find courses, universities, and countries to study in.
+            # Countries: full detail
+            country_lines = []
+            for c in countries[:30]:
+                name     = c.get('country_name', '')
+                avg_fee  = c.get('average_tuition_fees', '')
+                living   = c.get('annual_cost_of_living', '')
+                employ   = c.get('employability', '')
+                uni_cnt  = c.get('universities_count', '')
+                if name:
+                    country_lines.append(
+                        f"- {name}: avg tuition {avg_fee}, living cost {living}, "
+                        f"employability {employ}, {uni_cnt} universities"
+                    )
+            countries_text = "\n".join(country_lines) if country_lines else "No country data available"
 
-Available Data Context:
-- {len(countries)} countries available: {', '.join(country_names)}
-- {len(universities)} universities available including: {', '.join(uni_names)}
-- {len(courses)} courses available
+            # Universities: full detail
+            uni_lines = []
+            for u in universities[:30]:
+                name     = u.get('university_name', '')
+                country  = u.get('country_name', '')
+                location = u.get('location', '')
+                avg_fee  = u.get('average_tuition_fees', '')
+                employ   = u.get('employability', '')
+                rankings = u.get('rankings', {})
+                world_r  = rankings.get('world', '') if isinstance(rankings, dict) else ''
+                schol    = u.get('scholarships_available', '')
+                programs = u.get('programs_count', '')
+                if name:
+                    uni_lines.append(
+                        f"- {name} ({country}, {location}): avg fee {avg_fee}, "
+                        f"employability {employ}, world rank #{world_r}, "
+                        f"{programs} programs, scholarships: {schol}"
+                    )
+            universities_text = "\n".join(uni_lines) if uni_lines else "No university data available"
 
-Sample Courses:
-{chr(10).join([f"- {title}" for title in course_titles])}
+            # Courses: full detail
+            course_lines = []
+            for c in courses[:50]:
+                title    = c.get('course_title', '')
+                uni      = c.get('university_name', '')
+                country  = c.get('country_name', '')
+                level    = c.get('level', '')
+                duration = c.get('duration', '')
+                fee      = c.get('tuition_fees', '')
+                currency = c.get('currency', '')
+                intake   = c.get('intake', '')
+                ielts    = c.get('ielts_score', '')
+                if title:
+                    course_lines.append(
+                        f"- {title} | {uni}, {country} | {level} | {duration} | "
+                        f"{currency} {fee} | Intake: {intake} | IELTS: {ielts}"
+                    )
+            courses_text = "\n".join(course_lines) if course_lines else "No course data available"
 
-User's name: {user_name}
+            # ── System prompt with full data ───────────────────────────────
 
-Your Role:
-1. Be friendly, warm, and conversational
-2. Give specific recommendations from the data
-3. Keep responses concise (under 150 words)
-4. Use emojis sparingly 
-5. If asked about finding courses, suggest the AI Profile Evaluator
-6. Answer general questions about studying abroad (applications, visas, costs, scholarships)
-7. Be encouraging and supportive
+            system_prompt = f"""You are AIGLE, a friendly study abroad assistant chatbot for EdMaster.
 
-Important: Base your answers on the data context provided above."""
+AVAILABLE COUNTRIES IN OUR DATABASE:
+{countries_text}
 
-            # Build conversation messages
-            messages = [
-                {"role": "system", "content": system_prompt}
-            ]
+AVAILABLE UNIVERSITIES IN OUR DATABASE:
+{universities_text}
 
-            # Add conversation history (last 4 messages)
+AVAILABLE COURSES IN OUR DATABASE:
+{courses_text}
+
+Student's name: {user_name}
+
+IMPORTANT RULES:
+1. ONLY recommend countries, universities, and courses that are listed above in the database
+2. If a student asks about a country (e.g. UK, Denmark, USA), check the countries list above and give details from it
+3. Never say "I don't have data" if the country/university IS in the list above
+4. Be friendly, warm, and conversational
+5. Keep responses concise — under 150 words
+6. Use emojis sparingly (1–2 max)
+7. When recommending specific courses, include the university name, fee, and intake
+8. For personalized course matching, suggest the AI Profile Evaluator"""
+
+            # ── Build messages ─────────────────────────────────────────────
+
+            messages_list = [{"role": "system", "content": system_prompt}]
+
             for msg in history[-4:]:
                 role = msg.get('role', 'user')
                 if role == 'system':
                     role = 'assistant'
-                messages.append({
-                    "role": role,
-                    "content": msg.get('content', '')
-                })
+                messages_list.append({"role": role, "content": msg.get('content', '')})
 
-            # Add current message
-            messages.append({
-                "role": "user",
-                "content": message
-            })
+            messages_list.append({"role": "user", "content": message})
 
-            logger.info(f"Sending {len(messages)} messages to OpenAI")
+            logger.info(f"Sending {len(messages_list)} messages to OpenAI")
 
-            # Get AI response
             response = client.chat.completions.create(
                 model="gpt-4o-mini",
-                messages=messages,
+                messages=messages_list,
                 temperature=0.7,
                 max_tokens=300
             )
@@ -606,13 +647,11 @@ Important: Base your answers on the data context provided above."""
             ai_response = response.choices[0].message.content.strip()
             logger.info(f"AI response: {ai_response[:100]}...")
 
-            # Check if we should suggest filters
             suggest_keywords = [
                 'find course', 'recommend course', 'which course', 'suggest course',
                 'want to study', 'looking for', 'search for', 'help me find',
-                'show me course', 'best course'
+                'show me course', 'best course', 'match my profile'
             ]
-
             suggest_filters = any(keyword in message.lower() for keyword in suggest_keywords)
 
             return Response({

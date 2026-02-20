@@ -40,8 +40,6 @@ class ProfileInitiateSerializer(serializers.Serializer):
         value = value.strip()
         if len(value) < 2:
             raise serializers.ValidationError("Name must be at least 2 characters long.")
-        if len(value.split()) < 2:
-            raise serializers.ValidationError("Name must contain at least 2 words.")
         return value.title()
 
     def validate_phone(self, value):
